@@ -27,6 +27,59 @@
         </div>
       </div>
 
+      <!-- Submitted Restocking Orders -->
+      <div class="card restocking-card">
+        <div class="card-header restocking-header" @click="restockingOpen = !restockingOpen">
+          <h3 class="card-title">Submitted Restocking Orders ({{ restockingOrders.length }})</h3>
+          <button class="toggle-btn" :aria-expanded="restockingOpen" :aria-label="restockingOpen ? 'Collapse' : 'Expand'">
+            <span class="toggle-arrow" :class="{ open: restockingOpen }">&#9660;</span>
+          </button>
+        </div>
+        <div v-if="restockingOpen">
+          <div v-if="restockingOrders.length === 0" class="restocking-empty">
+            No restocking orders submitted yet.
+          </div>
+          <div v-else class="table-container">
+            <table class="restocking-table">
+              <thead>
+                <tr>
+                  <th>Order Number</th>
+                  <th>Date</th>
+                  <th>Items</th>
+                  <th>Total Cost</th>
+                  <th>Status</th>
+                  <th>Expected Delivery</th>
+                  <th>Lead Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="order in restockingOrders" :key="order.id">
+                  <td><strong>{{ order.order_number }}</strong></td>
+                  <td>{{ formatDate(order.order_date) }}</td>
+                  <td>
+                    <details class="items-details">
+                      <summary class="items-summary">
+                        {{ order.items.length }} item{{ order.items.length !== 1 ? 's' : '' }}
+                      </summary>
+                      <div class="items-dropdown">
+                        <div v-for="item in order.items" :key="item.sku" class="item-entry">
+                          <span class="item-name">{{ item.name }}</span>
+                          <span class="item-meta">{{ item.category }} &mdash; Qty: {{ item.quantity }} @ ${{ item.unit_cost.toLocaleString() }}</span>
+                        </div>
+                      </div>
+                    </details>
+                  </td>
+                  <td><strong>${{ order.total_cost.toLocaleString() }}</strong></td>
+                  <td><span class="badge info">{{ order.status }}</span></td>
+                  <td>{{ formatDate(order.expected_delivery) }}</td>
+                  <td>{{ getLeadTimeDays(order.order_date, order.expected_delivery) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header">
           <h3 class="card-title">{{ t('orders.allOrders') }} ({{ orders.length }})</h3>
@@ -96,6 +149,10 @@ export default {
     const error = ref(null)
     const orders = ref([])
 
+    // Restocking orders state
+    const restockingOrders = ref([])
+    const restockingOpen = ref(true)
+
     // Use shared filters
     const {
       selectedPeriod,
@@ -121,6 +178,14 @@ export default {
         error.value = 'Failed to load orders: ' + err.message
       } finally {
         loading.value = false
+      }
+    }
+
+    const loadRestockingOrders = async () => {
+      try {
+        restockingOrders.value = await api.getRestockingOrders()
+      } catch (err) {
+        console.error('Failed to load restocking orders:', err)
       }
     }
 
@@ -153,16 +218,32 @@ export default {
       })
     }
 
-    onMounted(loadOrders)
+    // Compute lead time in days between order_date and expected_delivery
+    const getLeadTimeDays = (orderDate, expectedDelivery) => {
+      const d1 = new Date(orderDate)
+      const d2 = new Date(expectedDelivery)
+      if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return '—'
+      const diffMs = d2 - d1
+      const days = Math.round(diffMs / (1000 * 60 * 60 * 24))
+      return days + ' day' + (days !== 1 ? 's' : '')
+    }
+
+    onMounted(() => {
+      loadOrders()
+      loadRestockingOrders()
+    })
 
     return {
       t,
       loading,
       error,
       orders,
+      restockingOrders,
+      restockingOpen,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
+      getLeadTimeDays,
       currencySymbol,
       translateProductName,
       translateCustomerName
@@ -172,6 +253,49 @@ export default {
 </script>
 
 <style scoped>
+/* Restocking orders section */
+.restocking-header {
+  cursor: pointer;
+  user-select: none;
+}
+
+.restocking-header:hover {
+  background: #f8fafc;
+  border-radius: 10px 10px 0 0;
+}
+
+.toggle-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+}
+
+.toggle-arrow {
+  display: inline-block;
+  font-size: 0.75rem;
+  transition: transform 0.2s ease;
+  transform: rotate(-90deg);
+}
+
+.toggle-arrow.open {
+  transform: rotate(0deg);
+}
+
+.restocking-empty {
+  padding: 1.5rem 0.75rem;
+  color: #64748b;
+  font-size: 0.938rem;
+}
+
+.restocking-table {
+  table-layout: auto;
+  width: 100%;
+}
+
 /* Fixed table layout to prevent column shifting */
 .orders-table {
   table-layout: fixed;

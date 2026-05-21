@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
+from datetime import datetime, timedelta
+import uuid
 from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
 
 app = FastAPI(title="Factory Inventory Management System")
@@ -119,6 +121,39 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockingOrderItem(BaseModel):
+    sku: str
+    name: str
+    category: str
+    quantity: int
+    unit_cost: float
+
+class RestockingOrder(BaseModel):
+    id: str
+    order_number: str
+    items: List[RestockingOrderItem]
+    total_cost: float
+    budget: float
+    status: str
+    order_date: str
+    expected_delivery: str
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[RestockingOrderItem]
+    budget: float
+
+# Lead time in days per category for restocking orders
+CATEGORY_LEAD_TIMES = {
+    'circuit boards': 14,
+    'sensors': 10,
+    'actuators': 7,
+    'controllers': 12,
+    'power supplies': 5,
+}
+
+# In-memory store for restocking orders (not persisted to JSON)
+restocking_orders: List[dict] = []
 
 # API endpoints
 @app.get("/")
@@ -303,6 +338,43 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/restocking-orders", response_model=List[RestockingOrder])
+def get_restocking_orders():
+    """Get all submitted restocking orders"""
+    return restocking_orders
+
+@app.post("/api/restocking-orders", response_model=RestockingOrder)
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    """Submit a restocking order; expected delivery uses the longest lead time among included categories"""
+    if not request.items:
+        raise HTTPException(status_code=400, detail="Order must include at least one item")
+
+    # Longest lead time among all items in the order determines expected delivery
+    max_lead_days = max(
+        CATEGORY_LEAD_TIMES.get(item.category.lower(), 7)
+        for item in request.items
+    )
+
+    now = datetime.utcnow()
+    order_date = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+    expected_delivery = (now + timedelta(days=max_lead_days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    total_cost = sum(item.quantity * item.unit_cost for item in request.items)
+    order_id = str(uuid.uuid4())
+    order_number = f"RST-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
+
+    order = {
+        "id": order_id,
+        "order_number": order_number,
+        "items": [item.model_dump() for item in request.items],
+        "total_cost": round(total_cost, 2),
+        "budget": request.budget,
+        "status": "Submitted",
+        "order_date": order_date,
+        "expected_delivery": expected_delivery,
+    }
+    restocking_orders.append(order)
+    return order
 
 if __name__ == "__main__":
     import uvicorn
