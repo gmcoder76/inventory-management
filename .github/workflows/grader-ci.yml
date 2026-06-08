@@ -1,0 +1,165 @@
+name: Enterprise Grader Suite
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  graders:
+    name: Run Grader Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r server/requirements.txt
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Clone enterprise standards
+        run: |
+          git clone --quiet https://github.com/ramanohar/enterprise-claude-standards-poc \
+            /tmp/enterprise-standards
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr_diff.txt
+          echo "lines=$(wc -l < /tmp/pr_diff.txt)" >> $GITHUB_OUTPUT
+
+      - name: Run grader suite
+        id: graders
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          DIFF=$(cat /tmp/pr_diff.txt)
+          STANDARDS_DIR="/tmp/enterprise-standards"
+          SCORECARD=""
+          OVERALL_PASS=true
+
+          run_grader() {
+            local name="$1"
+            local agent_file="$2"
+            local prompt
+            prompt="$(cat "$agent_file")"
+
+            echo "Running $name..."
+            local result
+            result=$(claude --print --allowedTools "Read,Grep" -p \
+              "${prompt}
+
+          === PR DIFF TO REVIEW ===
+          ${DIFF}
+
+          Respond ONLY with this format:
+          SCORE: [0-100]
+          STATUS: [PASS|WARN|FAIL]
+          FINDINGS:
+          - [finding 1]
+          - [finding 2]
+          SUMMARY: [one line]" 2>/dev/null || echo "SCORE: 0
+          STATUS: ERROR
+          FINDINGS:
+          - Grader failed to run
+          SUMMARY: Error running grader")
+
+            echo "$result"
+          }
+
+          # Run each grader
+          for grader in security-vuln coverage library-conformance performance api-contract; do
+            AGENT="$STANDARDS_DIR/agents/${grader}-grader.md"
+            if [ ! -f "$AGENT" ]; then
+              SCORECARD="${SCORECARD}| ❓ ${grader}-grader | N/A | Grader file not found |\n"
+              continue
+            fi
+
+            OUTPUT=$(run_grader "$grader" "$AGENT")
+            STATUS=$(echo "$OUTPUT" | grep "^STATUS:" | awk '{print $2}')
+            SCORE=$(echo "$OUTPUT" | grep "^SCORE:" | awk '{print $2}')
+            SUMMARY=$(echo "$OUTPUT" | grep "^SUMMARY:" | sed 's/^SUMMARY: //')
+
+            case "$STATUS" in
+              PASS) ICON="✅" ;;
+              WARN) ICON="⚠️" ;;
+              FAIL) ICON="❌"; OVERALL_PASS=false ;;
+              *)    ICON="❓" ;;
+            esac
+
+            SCORECARD="${SCORECARD}| ${ICON} ${grader}-grader | ${SCORE}/100 | ${SUMMARY} |\n"
+          done
+
+          echo "scorecard<<EOF" >> $GITHUB_OUTPUT
+          printf "$SCORECARD" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          if [ "$OVERALL_PASS" = "false" ]; then
+            echo "overall=FAIL" >> $GITHUB_OUTPUT
+          else
+            echo "overall=PASS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post scorecard comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const scorecard = `${{ steps.graders.outputs.scorecard }}`;
+            const overall = `${{ steps.graders.outputs.overall }}`;
+            const overallIcon = overall === 'PASS' ? '✅' : '❌';
+            const sha = context.payload.pull_request.head.sha.substring(0, 7);
+
+            const body = `## ${overallIcon} Enterprise Grader Scorecard
+
+            | Grader | Score | Summary |
+            |--------|-------|---------|
+            ${scorecard}
+
+            **Overall: ${overall}**
+
+            ${overall === 'FAIL' ? '> ❌ One or more graders failed. Fix the issues above, then re-push to re-run.\n> Tech lead: add `gate:approved` label only when all graders pass.' : '> ✅ All graders passed. Tech lead: add `gate:approved` label to enable merge.'}
+
+            <sub>Grader suite run on commit \`${sha}\` · Powered by [Enterprise Claude Standards](https://github.com/ramanohar/enterprise-claude-standards-poc)</sub>`;
+
+            // Delete previous scorecard comments
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            });
+            for (const comment of comments.data) {
+              if (comment.body.includes('Enterprise Grader Scorecard')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+
+            // Post fresh scorecard
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
+      - name: Fail if graders failed
+        if: steps.graders.outputs.overall == 'FAIL'
+        run: |
+          echo "One or more graders failed. See PR comment for details."
+          exit 1

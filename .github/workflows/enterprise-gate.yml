@@ -1,0 +1,40 @@
+name: Enterprise Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  gate-check:
+    name: Enterprise Gate (requires gate:approved)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check for gate:approved label
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+            const approved = labels.includes('gate:approved');
+            core.setOutput('approved', approved ? 'true' : 'false');
+            return approved;
+
+      - name: Gate approved
+        if: steps.gate.outputs.approved == 'true'
+        run: |
+          echo "✅ gate:approved label found — merge enabled."
+
+      - name: Gate blocked
+        if: steps.gate.outputs.approved != 'true'
+        run: |
+          echo "❌ gate:approved label not found."
+          echo ""
+          echo "Tech lead: review the grader scorecard in the PR comments."
+          echo "Add the 'gate:approved' label to enable merge."
+          exit 1
