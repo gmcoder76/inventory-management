@@ -1,0 +1,20 @@
+Summary
+Add a Low Stock Alert API endpoint with a notification event.
+As an inventory manager, I need a way to see which items are running low so I can restock before we run out.
+
+Context:
+The feature is for inventory managers who need to identify low-stock items before inventory runs out.
+
+Acceptance criteria:
+New endpoint GET /api/alerts/low-stock returns items where stock is below the reorder threshold, with warehouse and category filters.
+Response uses pagination: { items, page, page_size, total }
+Items with no reorder threshold set are excluded from alerts and returned separately in a warnings list.
+Every time the endpoint finds low-stock items, it logs an alert event to server/data/alert_events.json with:
+item SKU
+warehouse
+quantity on hand
+reorder point
+timestamp
+severity
+critical if quantity=0
+warning otherwise
